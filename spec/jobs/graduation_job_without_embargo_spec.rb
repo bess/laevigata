@@ -1,29 +1,28 @@
 require 'rails_helper'
-# For a work with an embargo, the GraduationJob should:
+# For a work without an embargo, the GraduationJob should:
 # * set the degree_awarded date
 # * publish the work (workflow transition)
 # * update the relevant User object to have the post-graduation email address
-# * update the embargo release date to the user's graduation date plus
-#   their requested embargo length
+# * ensure there is no embargo on the work or its files
 # * send notifications
 describe GraduationJob, :clean, integration: true do
-  context "a student with a requested embargo", :perform_jobs do
+  context "a student with no requested embargo", :perform_jobs do
     let(:w) { WorkflowSetup.new("#{fixture_path}/config/emory/superusers.yml", "#{fixture_path}/config/emory/candler_admin_sets.yml", "/dev/null") }
     let(:user)       { FactoryBot.create(:user) }
     let(:ability)    { ::Ability.new(user) }
     let(:env)        { Hyrax::Actors::Environment.new(Etd.new, ability, attributes) }
     let(:attributes) do
       {
-        title: ['The Adventures of Cottontail Rabbit'],
+        title: ['Open Access Adventures'],
         depositor: user.user_key,
         post_graduation_email: ['me@after.graduation.com'],
-        creator: ['Quest, June'],
+        creator: ['Quest, Jan'],
         school: ["Candler School of Theology"],
         department: ["Divinity"],
-        files_embargoed: true,
-        abstract_embargoed: true,
-        toc_embargoed: true,
-        embargo_length: '6 months',
+        files_embargoed: false,
+        abstract_embargoed: false,
+        toc_embargoed: false,
+        embargo_length: 'None - open access immediately',
         uploaded_files: [uploaded_file.id]
       }
     end
@@ -42,18 +41,15 @@ describe GraduationJob, :clean, integration: true do
     it "performs the graduation process" do
       etd = Etd.last
       expect(etd.degree_awarded).to eq nil
-      expect(etd.embargo.embargo_release_date).to eq six_years_from_today
-      expect(etd.embargo_length).to eq "6 months"
-      expect(etd.reload.file_sets.first.embargo)
-        .to have_attributes embargo_release_date: six_years_from_today,
-                            visibility_during_embargo: restricted,
-                            visibility_after_embargo: open
-      expect(etd.file_sets.first)
-        .to have_attributes visibility: restricted
+      expect(etd.embargo).to eq nil
+      expect(etd.embargo_length).to eq nil
+      expect(etd.reload.file_sets.first.embargo).to eq nil
+      expect(etd.file_sets.first).to have_attributes visibility: open
+      expect(etd.visibility).to eq open
       graduation_job = described_class.new
       graduation_job.perform(etd.id, Time.zone.tomorrow)
       etd.reload
-      expect(etd.visibility).to eq "all_restricted"
+      expect(etd.visibility).to eq open
 
       # The ETD should now have a degree_awarded date
       expect(etd.degree_awarded).to eq Time.zone.tomorrow
@@ -66,17 +62,15 @@ describe GraduationJob, :clean, integration: true do
       # for sending post-graduation notifications (e.g., for embargo expiration)
       expect(user.reload.email).to eq(etd.post_graduation_email.first)
 
-      # The embargo_release_date of the ETD and any attached files should now
-      # equal the user's graduation date plus the requested embargo length
-      expect(etd.embargo.embargo_release_date).to eq Time.zone.tomorrow + 6.months
-      expect(etd.file_sets.first.embargo.embargo_release_date).to eq Time.zone.tomorrow + 6.months
+      # The work and attached files should still not have an embargo
+      expect(etd.embargo).to eq nil
+      expect(etd.file_sets.first.embargo).to eq nil
 
-      # Attached files should be restricted during the embargo period
-      expect(etd.file_sets.first).to have_attributes visibility: restricted
+      # Attached files should be open
+      expect(etd.file_sets.first).to have_attributes visibility: open
 
-      # The `embargo_length` does not change. It would better be called
-      # 'requested_embargo_length'
-      expect(etd.embargo_length).to eq "6 months"
+      # The `embargo_length` should be blank
+      expect(etd.embargo_length).to eq nil
 
       # Notifications have been sent that the degree was awarded and the ETD was published
       expect(Hyrax::Workflow::DegreeAwardedNotification).to have_received(:send_notification)
